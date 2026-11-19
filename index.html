@@ -32,6 +32,11 @@ let api = null;
 let rebars = [];      // { modelId, id, props:[{set,name,value}] }
 let nonRebars = [];   // { modelId, id }
 let loaded = false;
+let classCounts = {};
+
+function classSummary() {
+  return Object.keys(classCounts).map(k => classCounts[k] +' x  ' + k).join('\n');
+}
 
 const GREY = { r: 150, g: 150, b: 150, a: 60 };     // a = 0..255 (60 = very transparent)
 const COLOR = { r: 255, g: 0, b: 0, a: 255 };
@@ -52,7 +57,7 @@ async function init() {
 async function loadObjects() {
   if (loaded) return;
   log('Reading model objects... (can take a while for big models)');
-  rebars = []; nonRebars = [];
+  rebars = []; nonRebars = []; classCounts = {};
   const groups = await api.viewer.getObjects();
   for (const g of groups) {
     const ids = g.objects.map(o => o.id);
@@ -60,11 +65,15 @@ async function loadObjects() {
       const chunk = ids.slice(i, i + 500);
       const result = await api.viewer.getObjectProperties(g.modelId, chunk);
       for (const r of result) {
-        const isRebar = /reinforc|rebar/i.test(r.class || '');
+        const flat = [];
+        (r.properties || []).forEach(ps =>
+          (ps.properties || []).forEach(p => flat.push({ set: ps.name || ps.set, name: p.name, value: p.value })));
+        const key = (r.class || '') + ' | ' + (r.product && r.product.name ? r.product.name : '');
+        classCounts[key] = (classCounts[key] || 0) + 1;
+        const idText = key + ' ' + flat.filter(p => /class|type|entity|name/i.test(String(p.name)))
+          .map(p => p.value).join(' ');
+        const isRebar = /reinforc|rebar|armering|wapening/i.test(idText);
         if (isRebar) {
-          const flat = [];
-          (r.properties || []).forEach(ps =>
-            (ps.properties || []).forEach(p => flat.push({ set: ps.name || ps.set, name: p.name, value: p.value })));
           rebars.push({ modelId: g.modelId, id: r.id, props: flat });
         } else {
           nonRebars.push({ modelId: g.modelId, id: r.id });
@@ -77,6 +86,10 @@ async function loadObjects() {
 
 async function greyRebars() {
   await loadObjects();
+  if (!rebars.length) {
+    log('No rebars recognised, so nothing was hidden.\nObject classes in this model:\n' + classSummary());
+    return;
+  }
   if (nonRebars.length) await api.viewer.setObjectState(selector(nonRebars), { visible: false });
   if (rebars.length) await api.viewer.setObjectState(selector(rebars), { visible: true, color: GREY });
   log('Rebars: ' + rebars.length + ' shown in grey. Other objects: ' + nonRebars.length + ' hidden.');
