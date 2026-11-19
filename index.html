@@ -1,0 +1,115 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Rebar filter</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; font-size: 14px; margin: 12px; color: #222; }
+  button { padding: 8px 12px; margin: 4px 0; width: 100%; cursor: pointer; }
+  input { padding: 6px; width: 100%; box-sizing: border-box; margin: 4px 0; }
+  label { display: block; margin-top: 10px; font-weight: bold; }
+  #log { margin-top: 12px; font-size: 12px; white-space: pre-wrap; background: #f3f3f3; padding: 8px; max-height: 260px; overflow: auto; }
+</style>
+</head>
+<body>
+<button id="btnGrey">1. Show only rebars (grey + transparent)</button>
+<button id="btnReset">Reset (show everything normal)</button>
+
+<label for="propName">Property name contains:</label>
+<input id="propName" value="set" placeholder="e.g. set number">
+
+<label for="setNr">Rebar set number:</label>
+<input id="setNr" placeholder="e.g. 12">
+<button id="btnSearch">2. Search and colour this rebar set</button>
+
+<button id="btnProps">Show properties of first rebar (to find the right name)</button>
+<div id="log">Connecting...</div>
+
+<script>
+let api = null;
+let rebars = [];      // { modelId, id, props:[{set,name,value}] }
+let nonRebars = [];   // { modelId, id }
+let loaded = false;
+
+const GREY = { r: 150, g: 150, b: 150, a: 60 };     // a = 0..255 (60 = very transparent)
+const COLOR = { r: 255, g: 0, b: 0, a: 255 };
+
+function log(t) { document.getElementById('log').textContent = t; }
+
+function selector(items) {
+  const byModel = {};
+  items.forEach(o => (byModel[o.modelId] = byModel[o.modelId] || []).push(o.id));
+  return { modelObjectIds: Object.keys(byModel).map(m => ({ modelId: m, objectRuntimeIds: byModel[m] })) };
+}
+
+async function init() {
+  api = await TrimbleConnectWorkspace.connect(window.parent, () => {}, 30000);
+  log('Connected. Press button 1 to start.');
+}
+
+async function loadObjects() {
+  if (loaded) return;
+  log('Reading model objects... (can take a while for big models)');
+  rebars = []; nonRebars = [];
+  const groups = await api.viewer.getObjects();
+  for (const g of groups) {
+    const ids = g.objects.map(o => o.id);
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const result = await api.viewer.getObjectProperties(g.modelId, chunk);
+      for (const r of result) {
+        const isRebar = /reinforc|rebar/i.test(r.class || '');
+        if (isRebar) {
+          const flat = [];
+          (r.properties || []).forEach(ps =>
+            (ps.properties || []).forEach(p => flat.push({ set: ps.name || ps.set, name: p.name, value: p.value })));
+          rebars.push({ modelId: g.modelId, id: r.id, props: flat });
+        } else {
+          nonRebars.push({ modelId: g.modelId, id: r.id });
+        }
+      }
+    }
+  }
+  loaded = true;
+}
+
+async function greyRebars() {
+  await loadObjects();
+  if (nonRebars.length) await api.viewer.setObjectState(selector(nonRebars), { visible: false });
+  if (rebars.length) await api.viewer.setObjectState(selector(rebars), { visible: true, color: GREY });
+  log('Rebars: ' + rebars.length + ' shown in grey. Other objects: ' + nonRebars.length + ' hidden.');
+}
+
+async function searchSet() {
+  await greyRebars();
+  const nameBit = document.getElementById('propName').value.trim().toLowerCase();
+  const nr = document.getElementById('setNr').value.trim();
+  if (!nr) { log('Fill in a rebar set number first.'); return; }
+  const hits = rebars.filter(r => r.props.some(p =>
+    String(p.name).toLowerCase().includes(nameBit) && String(p.value).trim() === nr));
+  if (!hits.length) { log('No rebars found with "' + nameBit + '" = ' + nr + '. Use the properties button to check the name.'); return; }
+  await api.viewer.setObjectState(selector(hits), { visible: true, color: COLOR });
+  log('Found ' + hits.length + ' rebars in set ' + nr + '. They are coloured.');
+}
+
+async function resetAll() {
+  await api.viewer.setObjectState(undefined, { visible: true, color: 'reset' });
+  log('Everything reset.');
+}
+
+async function showProps() {
+  await loadObjects();
+  if (!rebars.length) { log('No rebars found (class containing "reinforc" or "rebar").'); return; }
+  log(rebars[0].props.map(p => p.set + ' > ' + p.name + ' = ' + p.value).join('\n'));
+}
+
+document.getElementById('btnGrey').onclick = () => greyRebars().catch(e => log('Error: ' + e));
+document.getElementById('btnSearch').onclick = () => searchSet().catch(e => log('Error: ' + e));
+document.getElementById('btnReset').onclick = () => resetAll().catch(e => log('Error: ' + e));
+document.getElementById('btnProps').onclick = () => showProps().catch(e => log('Error: ' + e));
+init().catch(e => log('Could not connect: ' + e));
+</script>
+</body>
+</html>
